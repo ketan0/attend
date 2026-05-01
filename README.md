@@ -1,7 +1,8 @@
 # attend
 
-A CLI for shaping and guiding computer attention on macOS — block, friction,
-nudge, and allow rules applied to domains, paths, and apps. Designed to be
+`attend`is a tool for shaping the quality and direction of your attention while using the computer.
+
+rules can be applied to domains, paths, and apps. Designed to be
 driven by AI agents as well as humans.
 
 ## Status
