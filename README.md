@@ -9,8 +9,8 @@ driven by AI agents as well as humans.
 
 v0.1. Single-user, macOS-only. Working: block, friction, nudge, allow,
 recurring schedules, browser-side path-level enforcement, /etc/hosts-based
-domain enforcement, app polling/quit. Not yet wired: native-app friction
-overlays (only block works for native apps).
+domain enforcement, app polling/quit, native-app friction (SwiftUI overlay
+launched into the user's GUI session, with daemon-side cooldowns).
 
 ## Components
 
@@ -23,7 +23,9 @@ overlays (only block works for native apps).
   rules and for enforcing block/friction at the page-load layer (which works
   even when Chrome's Secure DNS bypasses `/etc/hosts`).
 - **`AttendFriction`** — minimal SwiftUI helper for native-app friction
-  screens (scaffolded; not yet wired into the daemon).
+  screens. Spawned by the daemon via `launchctl asuser` when a friction
+  rule matches a running native app; posts the result back to the daemon
+  to set a cooldown.
 
 ## Install
 

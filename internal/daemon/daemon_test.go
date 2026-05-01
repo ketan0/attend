@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -93,6 +94,67 @@ func TestDaemonEnforceWiresDomainsAndApps(t *testing.T) {
 	quits := quitter.QuitsSnapshot()
 	if len(quits) != 1 || quits[0] != "Slack" {
 		t.Errorf("Quits = %v, want [Slack]", quits)
+	}
+}
+
+func TestDaemonEnforceFrictionAppQuitsAndLaunches(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "rules.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	frictionRule := rules.Rule{
+		ID: "rf", Action: rules.ActionFriction,
+		Target:    rules.Target{Kind: rules.TargetApp, Value: "Discord"},
+		Schedule:  rules.Schedule{Kind: rules.ScheduleAlways},
+		Friction:  &rules.FrictionConfig{Level: rules.FrictionIntent, Cooldown: rules.Duration(10 * time.Minute)},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Put(frictionRule); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	hm := hosts.New(newMemHostsFS(), "/etc/hosts")
+	lister := &appmon.FakeLister{Apps: []string{"Discord", "Safari"}}
+	quitter := &appmon.FakeQuitter{}
+	launcher := &appmon.FakeLauncher{}
+	d := &Daemon{
+		cfg:   Config{Logger: log.New(io.Discard, "", 0)},
+		store: st,
+		hosts: hm,
+		mon: &appmon.Monitor{
+			Lister: lister, Quitter: quitter, Launcher: launcher,
+			MinLaunchInterval: 30 * time.Second,
+		},
+		poke: make(chan struct{}, 1),
+	}
+	d.enforce()
+
+	if !reflect.DeepEqual(quitter.QuitsSnapshot(), []string{"Discord"}) {
+		t.Errorf("expected Discord quit, got %v", quitter.QuitsSnapshot())
+	}
+	launches := launcher.LaunchesSnapshot()
+	if len(launches) != 1 || launches[0].App != "Discord" || launches[0].RuleID != "rf" {
+		t.Errorf("expected one launch for Discord/rf, got %+v", launches)
+	}
+
+	// Pass the challenge by writing a cooldown directly (the server endpoint
+	// is tested separately).
+	settings := st.Settings()
+	if settings.Cooldowns == nil {
+		settings.Cooldowns = map[string]time.Time{}
+	}
+	settings.Cooldowns["rf"] = time.Now().Add(10 * time.Minute)
+	if err := st.PutSettings(settings); err != nil {
+		t.Fatalf("PutSettings: %v", err)
+	}
+	d.enforce()
+	if got := len(launcher.LaunchesSnapshot()); got != 1 {
+		t.Errorf("during cooldown, expected no new launches; total = %d", got)
+	}
+	if got := len(quitter.QuitsSnapshot()); got != 1 {
+		t.Errorf("during cooldown, expected no new quits; total = %d", got)
 	}
 }
 

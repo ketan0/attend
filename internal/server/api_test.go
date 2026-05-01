@@ -356,6 +356,118 @@ func TestIdempotentCreateWithExplicitID(t *testing.T) {
 	}
 }
 
+func TestFrictionResultSetsCooldown(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	// Create a friction rule first.
+	body := CreateRuleRequest{
+		Action: rules.ActionFriction,
+		Target: rules.Target{Kind: rules.TargetApp, Value: "Discord"},
+		Friction: &rules.FrictionConfig{
+			Level:    rules.FrictionIntent,
+			Cooldown: rules.Duration(10 * time.Minute),
+		},
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/rules", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d body=%s", resp.StatusCode, raw)
+	}
+	var rule rules.Rule
+	_ = json.Unmarshal(raw, &rule)
+
+	// Pass the challenge.
+	resp, raw = doJSON(t, "POST", hs.URL+"/v1/friction/result", FrictionResultRequest{
+		ChallengeID: rule.ID,
+		Target:      "Discord",
+		Passed:      true,
+		Intent:      "checking team chat for an actual reason",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("friction/result: %d body=%s", resp.StatusCode, raw)
+	}
+	var fr FrictionResultResponse
+	_ = json.Unmarshal(raw, &fr)
+	if !fr.Passed || fr.CooldownUntil == nil {
+		t.Fatalf("expected passed + cooldown_until, got %+v", fr)
+	}
+	if !fr.CooldownUntil.Equal(fixedTime.Add(10 * time.Minute)) {
+		t.Errorf("cooldown_until = %v, want fixedTime+10m", fr.CooldownUntil)
+	}
+
+	// Status should reflect the cooldown.
+	resp, raw = doJSON(t, "GET", hs.URL+"/v1/status", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	var st StatusResponse
+	_ = json.Unmarshal(raw, &st)
+	if got, ok := st.Settings.Cooldowns[rule.ID]; !ok ||
+		!got.Equal(fixedTime.Add(10*time.Minute)) {
+		t.Errorf("settings.cooldowns[rule.ID] = %v, want fixedTime+10m", got)
+	}
+}
+
+func TestFrictionResultFailedDoesNotSetCooldown(t *testing.T) {
+	_, hs := newTestServer(t)
+	body := CreateRuleRequest{
+		Action:   rules.ActionFriction,
+		Target:   rules.Target{Kind: rules.TargetApp, Value: "Discord"},
+		Friction: &rules.FrictionConfig{Level: rules.FrictionIntent},
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/rules", body)
+	var rule rules.Rule
+	_ = json.Unmarshal(raw, &rule)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+
+	resp, _ = doJSON(t, "POST", hs.URL+"/v1/friction/result", FrictionResultRequest{
+		ChallengeID: rule.ID,
+		Passed:      false,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 even on fail, got %d", resp.StatusCode)
+	}
+	resp, raw = doJSON(t, "GET", hs.URL+"/v1/status", nil)
+	var st StatusResponse
+	_ = json.Unmarshal(raw, &st)
+	if _, ok := st.Settings.Cooldowns[rule.ID]; ok {
+		t.Errorf("expected no cooldown after failed challenge")
+	}
+}
+
+func TestFrictionResultUnknownRule(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, _ := doJSON(t, "POST", hs.URL+"/v1/friction/result", FrictionResultRequest{
+		ChallengeID: "r_nope",
+		Passed:      true,
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown rule, got %d", resp.StatusCode)
+	}
+}
+
+func TestFrictionResultRejectsNonFrictionRule(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/rules", CreateRuleRequest{
+		Action: rules.ActionBlock,
+		Target: rules.Target{Kind: rules.TargetApp, Value: "Slack"},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+	var rule rules.Rule
+	_ = json.Unmarshal(raw, &rule)
+
+	resp, _ = doJSON(t, "POST", hs.URL+"/v1/friction/result", FrictionResultRequest{
+		ChallengeID: rule.ID,
+		Passed:      true,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-friction rule, got %d", resp.StatusCode)
+	}
+}
+
 func TestNotFound(t *testing.T) {
 	_, hs := newTestServer(t)
 	resp, _ := doJSON(t, "GET", hs.URL+"/v1/rules/nope", nil)

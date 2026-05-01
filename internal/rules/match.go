@@ -6,6 +6,101 @@ import (
 	"time"
 )
 
+// FrictionAppRequest is one app-level friction rule the daemon should
+// enforce: when the named app is running and not in cooldown, the user gets
+// a friction screen.
+type FrictionAppRequest struct {
+	RuleID   string         `json:"rule_id"`
+	App      string         `json:"app"`
+	Friction FrictionConfig `json:"friction"`
+}
+
+// SystemPlan is the full set of OS-level actions the daemon should take this
+// tick. Returned by ComputeSystemPlan.
+type SystemPlan struct {
+	// Domains to sinkhole in /etc/hosts.
+	Domains []string
+	// Apps to quit on sight.
+	BlockedApps []string
+	// Apps to friction on sight (quit + show challenge).
+	FrictionApps []FrictionAppRequest
+}
+
+// ComputeSystemPlan walks the rule list and produces the plan the daemon
+// should enforce right now. Allow rules suppress block/friction rules with
+// the same canonical target; path-allow rules under a domain block drop the
+// domain from /etc/hosts so the browser extension can carve out paths.
+//
+// Pure: no I/O. Tests live in match_test.go.
+func ComputeSystemPlan(rs []Rule, now time.Time) SystemPlan {
+	canonAllow := map[string]struct{}{}
+	domainNarrowed := map[string]struct{}{}
+	for _, r := range rs {
+		if !r.Schedule.IsActive(now) || r.Action != ActionAllow {
+			continue
+		}
+		canonAllow[r.Target.Canonical()] = struct{}{}
+		if r.Target.Kind == TargetPath {
+			v := strings.ToLower(strings.TrimSpace(r.Target.Value))
+			if i := strings.IndexByte(v, '/'); i >= 0 {
+				v = v[:i]
+			}
+			if v != "" {
+				domainNarrowed[v] = struct{}{}
+			}
+		}
+	}
+
+	domSet := map[string]struct{}{}
+	blockedAppSet := map[string]struct{}{}
+	var friction []FrictionAppRequest
+
+	for _, r := range rs {
+		if !r.Schedule.IsActive(now) {
+			continue
+		}
+		if _, shadowed := canonAllow[r.Target.Canonical()]; shadowed {
+			continue
+		}
+		switch r.Action {
+		case ActionBlock:
+			switch r.Target.Kind {
+			case TargetDomain:
+				v := strings.ToLower(strings.TrimSpace(r.Target.Value))
+				if _, narrowed := domainNarrowed[v]; narrowed {
+					continue
+				}
+				domSet[r.Target.Value] = struct{}{}
+			case TargetApp:
+				blockedAppSet[r.Target.Value] = struct{}{}
+			}
+		case ActionFriction:
+			if r.Target.Kind == TargetApp && r.Friction != nil {
+				friction = append(friction, FrictionAppRequest{
+					RuleID:   r.ID,
+					App:      r.Target.Value,
+					Friction: *r.Friction,
+				})
+			}
+		}
+	}
+
+	plan := SystemPlan{}
+	for d := range domSet {
+		plan.Domains = append(plan.Domains, d)
+	}
+	for a := range blockedAppSet {
+		plan.BlockedApps = append(plan.BlockedApps, a)
+	}
+	plan.FrictionApps = friction
+	sort.Strings(plan.Domains)
+	sort.Strings(plan.BlockedApps)
+	sort.Slice(plan.FrictionApps, func(i, j int) bool {
+		return plan.FrictionApps[i].RuleID < plan.FrictionApps[j].RuleID
+	})
+	return plan
+}
+
 // SystemBlocks returns the domains and apps that should be blocked at the OS
 // layer right now (i.e. what /etc/hosts and the app monitor should enforce).
 // Allow rules suppress block rules:

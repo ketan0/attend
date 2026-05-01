@@ -20,12 +20,13 @@ import (
 
 // Config controls daemon startup.
 type Config struct {
-	Addr      string        // e.g. "127.0.0.1:7723"
-	StorePath string        // e.g. "~/.config/attend/rules.json"
-	HostsPath string        // typically "/etc/hosts"
-	TickEvery time.Duration // enforcement tick interval; default 5s
-	Version   string
-	Logger    *log.Logger
+	Addr            string        // e.g. "127.0.0.1:7723"
+	StorePath       string        // e.g. "~/.config/attend/rules.json"
+	HostsPath       string        // typically "/etc/hosts"
+	TickEvery       time.Duration // enforcement tick interval; default 5s
+	Version         string
+	Logger          *log.Logger
+	FrictionAppPath string // optional; path to AttendFriction binary. Empty = no native friction.
 }
 
 // Daemon is a constructed (but not running) daemon.
@@ -68,6 +69,12 @@ func New(cfg Config) (*Daemon, error) {
 
 	hm := hosts.New(hosts.OSFS{}, cfg.HostsPath)
 	mon := &appmon.Monitor{Lister: appmon.OSALister{}, Quitter: appmon.OSAQuitter{}}
+	if cfg.FrictionAppPath != "" {
+		mon.Launcher = appmon.LaunchctlFrictionLauncher{
+			BinaryPath: cfg.FrictionAppPath,
+			DaemonURL:  "http://" + cfg.Addr,
+		}
+	}
 
 	srv := server.New(st)
 	srv.Version = cfg.Version
@@ -145,19 +152,20 @@ func (d *Daemon) enforce() {
 		return
 	}
 
-	// SystemBlocks computes what the OS layer should be enforcing right now,
-	// after honoring allow rules that narrow or override block rules.
-	domains, apps := rules.SystemBlocks(d.store.List(), now)
+	plan := rules.ComputeSystemPlan(d.store.List(), now)
 
-	if err := d.hosts.Apply(domains); err != nil {
+	if err := d.hosts.Apply(plan.Domains); err != nil {
 		d.cfg.Logger.Printf("hosts.Apply: %v", err)
 	}
-	if results, err := d.mon.Sweep(apps); err != nil {
+	if results, err := d.mon.Sweep(plan.BlockedApps, plan.FrictionApps, settings, now); err != nil {
 		d.cfg.Logger.Printf("appmon.Sweep: %v", err)
 	} else {
 		for _, r := range results {
 			if r.QuitErr != nil {
 				d.cfg.Logger.Printf("quit %q: %v", r.App, r.QuitErr)
+			}
+			if r.FrictionErr != nil {
+				d.cfg.Logger.Printf("friction launch %q: %v", r.App, r.FrictionErr)
 			}
 		}
 	}

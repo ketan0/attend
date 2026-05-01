@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/rules/{id}", s.handleDeleteRule)
 	mux.HandleFunc("POST /v1/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/resume", s.handleResume)
+	mux.HandleFunc("POST /v1/friction/result", s.handleFrictionResult)
 	return mux
 }
 
@@ -377,6 +378,71 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// FrictionResultRequest is posted by the friction GUI helper after a user
+// passes (or cancels) a challenge.
+type FrictionResultRequest struct {
+	ChallengeID string `json:"challenge_id"` // rule ID
+	Target      string `json:"target"`       // app name or domain (informational)
+	Passed      bool   `json:"passed"`
+	Intent      string `json:"intent,omitempty"` // for level=intent
+}
+
+// FrictionResultResponse echoes the resulting cooldown.
+type FrictionResultResponse struct {
+	Passed         bool       `json:"passed"`
+	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
+}
+
+func (s *Server) handleFrictionResult(w http.ResponseWriter, r *http.Request) {
+	var req FrictionResultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	if req.ChallengeID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_input", "challenge_id is required")
+		return
+	}
+	if !req.Passed {
+		// Failed / cancelled — no cooldown set, app stays gated.
+		writeJSON(w, http.StatusOK, FrictionResultResponse{Passed: false})
+		return
+	}
+
+	rule, ok := s.Store.Get(req.ChallengeID)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found",
+			"no rule with id "+req.ChallengeID)
+		return
+	}
+	if rule.Action != rules.ActionFriction || rule.Friction == nil {
+		writeErr(w, http.StatusBadRequest, "invalid_rule",
+			"rule "+rule.ID+" is not a friction rule")
+		return
+	}
+
+	cd := rule.Friction.Cooldown
+	if cd == 0 {
+		cd = rules.Duration(5 * time.Minute)
+	}
+	now := s.Now()
+	expiry := now.Add(cd.Std())
+
+	settings := s.Store.Settings()
+	if settings.Cooldowns == nil {
+		settings.Cooldowns = map[string]time.Time{}
+	}
+	settings.Cooldowns[rule.ID] = expiry
+	if err := s.Store.PutSettings(settings); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_write", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, FrictionResultResponse{
+		Passed:        true,
+		CooldownUntil: &expiry,
+	})
 }
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {

@@ -127,6 +127,67 @@ func TestSystemBlocks_PathAllowOnSubdomainStillNarrows(t *testing.T) {
 	}
 }
 
+func TestComputeSystemPlan_FrictionAppsCollected(t *testing.T) {
+	now := time.Now()
+	rs := []Rule{
+		mkBlock("r1", "domain", "twitter.com"),
+		mkBlock("r2", "app", "Slack"),
+		{
+			ID: "r3", Action: ActionFriction,
+			Target:   Target{Kind: TargetApp, Value: "Discord"},
+			Schedule: Schedule{Kind: ScheduleAlways},
+			Friction: &FrictionConfig{Level: FrictionIntent, Cooldown: Duration(5 * time.Minute)},
+		},
+	}
+	plan := ComputeSystemPlan(rs, now)
+	if !reflect.DeepEqual(plan.Domains, []string{"twitter.com"}) {
+		t.Errorf("domains = %v", plan.Domains)
+	}
+	if !reflect.DeepEqual(plan.BlockedApps, []string{"Slack"}) {
+		t.Errorf("blocked apps = %v", plan.BlockedApps)
+	}
+	if len(plan.FrictionApps) != 1 ||
+		plan.FrictionApps[0].App != "Discord" ||
+		plan.FrictionApps[0].RuleID != "r3" {
+		t.Errorf("friction apps = %+v", plan.FrictionApps)
+	}
+}
+
+func TestComputeSystemPlan_AllowSuppressesFrictionApp(t *testing.T) {
+	now := time.Now()
+	rs := []Rule{
+		{
+			ID: "r1", Action: ActionFriction,
+			Target:   Target{Kind: TargetApp, Value: "Discord"},
+			Schedule: Schedule{Kind: ScheduleAlways},
+			Friction: &FrictionConfig{Level: FrictionIntent},
+		},
+		mkAllow("r2", "app", "Discord"),
+	}
+	plan := ComputeSystemPlan(rs, now)
+	if len(plan.FrictionApps) != 0 {
+		t.Errorf("expected friction suppressed by allow, got %+v", plan.FrictionApps)
+	}
+}
+
+func TestComputeSystemPlan_FrictionWithoutConfigSkipped(t *testing.T) {
+	// A friction rule without Friction config wouldn't pass Validate, but
+	// the helper should be defensive.
+	now := time.Now()
+	rs := []Rule{
+		{
+			ID: "r1", Action: ActionFriction,
+			Target:   Target{Kind: TargetApp, Value: "Discord"},
+			Schedule: Schedule{Kind: ScheduleAlways},
+			// Friction: nil — invalid in practice, but don't blow up.
+		},
+	}
+	plan := ComputeSystemPlan(rs, now)
+	if len(plan.FrictionApps) != 0 {
+		t.Errorf("expected nil-friction to be skipped, got %+v", plan.FrictionApps)
+	}
+}
+
 func TestSystemBlocks_DedupsAndSorts(t *testing.T) {
 	now := time.Now()
 	rs := []Rule{

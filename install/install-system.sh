@@ -43,8 +43,14 @@ sudo -u "$REAL_USER" -H bash -c "cd '${DIR}' && go build -o '${TMPBUILD}/attendd
 sudo -u "$REAL_USER" -H bash -c "cd '${DIR}' && go build -o '${TMPBUILD}/attend' ./cmd/attend"
 install -m 0755 "${TMPBUILD}/attendd" "${BIN_DIR}/attendd"
 install -m 0755 "${TMPBUILD}/attend" "${BIN_DIR}/attend"
+
+# AttendFriction (SwiftUI native friction screen).
+echo "[attend] building AttendFriction"
+sudo -u "$REAL_USER" -H bash -c "cd '${DIR}/swift/AttendFriction' && ./build.sh"
+install -m 0755 "${DIR}/swift/AttendFriction/AttendFriction" "${BIN_DIR}/AttendFriction"
+
 rm -rf "$TMPBUILD"
-echo "[attend] installed -> ${BIN_DIR}/{attend,attendd}"
+echo "[attend] installed -> ${BIN_DIR}/{attend,attendd,AttendFriction}"
 
 # 3. Set up state directory (root-owned, since the daemon runs as root).
 mkdir -p "$STATE_DIR"

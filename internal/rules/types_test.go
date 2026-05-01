@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+func TestSettingsIsCooledDown(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	s := Settings{Cooldowns: map[string]time.Time{
+		"r1": now.Add(5 * time.Minute),
+		"r2": now.Add(-1 * time.Minute), // expired
+	}}
+	if !s.IsCooledDown("r1", now) {
+		t.Errorf("r1 should be cooled down")
+	}
+	if s.IsCooledDown("r2", now) {
+		t.Errorf("r2 should be expired")
+	}
+	if s.IsCooledDown("r3", now) {
+		t.Errorf("r3 unknown should not be cooled down")
+	}
+}
+
 func TestActionValid(t *testing.T) {
 	cases := map[Action]bool{
 		ActionBlock: true, ActionFriction: true, ActionNudge: true, ActionAllow: true,

@@ -134,11 +134,23 @@ type Settings struct {
 	// PausedUntil, when non-nil, suppresses all enforcement until that
 	// instant. Nil means not paused.
 	PausedUntil *time.Time `json:"paused_until,omitempty"`
+	// Cooldowns maps rule ID → expiry time. While the entry is in the
+	// future, the rule's enforcement is suppressed (e.g. an app-friction
+	// rule the user just passed). Entries in the past are stale and may
+	// be ignored.
+	Cooldowns map[string]time.Time `json:"cooldowns,omitempty"`
 }
 
 // IsPaused reports whether settings says we're currently paused at time t.
 func (s Settings) IsPaused(t time.Time) bool {
 	return s.PausedUntil != nil && t.Before(*s.PausedUntil)
+}
+
+// IsCooledDown reports whether the rule with the given ID has an active
+// cooldown at time t.
+func (s Settings) IsCooledDown(ruleID string, t time.Time) bool {
+	exp, ok := s.Cooldowns[ruleID]
+	return ok && t.Before(exp)
 }
 
 // Rule is the unit of attention design.

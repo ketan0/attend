@@ -19,16 +19,18 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7723", "HTTP listen address")
 	storePath := flag.String("store", defaultStorePath(), "rule store path")
 	hostsPath := flag.String("hosts", "/etc/hosts", "hosts file path")
+	frictionApp := flag.String("friction-app", "", "path to AttendFriction binary (empty disables native friction)")
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "attendd ", log.LstdFlags|log.Lmicroseconds)
 
 	d, err := daemon.New(daemon.Config{
-		Addr:      *addr,
-		StorePath: *storePath,
-		HostsPath: *hostsPath,
-		Version:   version,
-		Logger:    logger,
+		Addr:            *addr,
+		StorePath:       *storePath,
+		HostsPath:       *hostsPath,
+		FrictionAppPath: *frictionApp,
+		Version:         version,
+		Logger:          logger,
 	})
 	if err != nil {
 		logger.Fatalf("daemon init: %v", err)
