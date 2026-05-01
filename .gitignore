@@ -1,0 +1,17 @@
+# Build outputs
+/bin/
+/dist/
+/swift/AttendFriction/AttendFriction
+/swift/AttendFriction/*.dSYM
+
+# Local state
+attendd.log
+*.log
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+
+# Go test cache (never committed but harmless)
+/coverage.out

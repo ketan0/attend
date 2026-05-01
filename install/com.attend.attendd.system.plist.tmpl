@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.attend.attendd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/attendd</string>
+        <string>--addr</string>
+        <string>127.0.0.1:7723</string>
+        <string>--store</string>
+        <string>/var/lib/attend/rules.json</string>
+        <string>--hosts</string>
+        <string>/etc/hosts</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/attendd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/attendd.log</string>
+</dict>
+</plist>
