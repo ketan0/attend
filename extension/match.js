@@ -12,7 +12,7 @@
 
   // targetMatches: rule.target vs a parsed URL.
   function targetMatches(target, url) {
-    const value = (target.value || "").toLowerCase();
+    const value = normalizeWebTargetValue(target.value || "");
     const host = (url.hostname || "").toLowerCase();
     // Path is also lowercased: web hosts (esp. reddit) treat URL paths
     // case-insensitively, so /r/LocalLLaMA and /r/locallama are the same
@@ -31,6 +31,11 @@
       return (path + search).startsWith(tPath);
     }
     return false;
+  }
+
+  function normalizeWebTargetValue(value) {
+    return String(value).trim().toLowerCase()
+      .replace(/^https?:\/\//, "");
   }
 
   // pickEffective applies attend's precedence rule:

@@ -62,11 +62,19 @@ func (t Target) Canonical() string {
 	v := strings.TrimSpace(t.Value)
 	switch t.Kind {
 	case TargetDomain, TargetPath:
-		v = strings.ToLower(v)
-		v = strings.TrimPrefix(v, "http://")
-		v = strings.TrimPrefix(v, "https://")
+		v = NormalizeWebTargetValue(v)
 	}
 	return string(t.Kind) + ":" + v
+}
+
+// NormalizeWebTargetValue canonicalizes domain/path targets for storage and
+// matching. Users often paste full browser URLs, but attend's web targets are
+// stored as host[/path] without a scheme.
+func NormalizeWebTargetValue(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.TrimPrefix(v, "http://")
+	v = strings.TrimPrefix(v, "https://")
+	return v
 }
 
 // FrictionLevel describes the kind of challenge interposed.
@@ -272,7 +280,7 @@ func (w Window) Validate() error {
 // available and unambiguous for agent callers.
 type Duration time.Duration
 
-func (d Duration) String() string { return time.Duration(d).String() }
+func (d Duration) String() string     { return time.Duration(d).String() }
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 func (d Duration) MarshalJSON() ([]byte, error) {

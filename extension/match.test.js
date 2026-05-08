@@ -39,6 +39,12 @@ test("path target — narrow path matches", () => {
   assert.equal(targetMatches(t, url("https://www.reddit.com/r/all")), true);
 });
 
+test("path target — URL-form target matches", () => {
+  const t = { kind: "path", value: "https://x.com/home" };
+  assert.equal(targetMatches(t, url("https://x.com/home")), true);
+  assert.equal(targetMatches(t, url("https://www.x.com/home")), true);
+});
+
 test("path target — case-insensitive path match", () => {
   // Same letters, different case — should match.
   const t = { kind: "path", value: "reddit.com/r/LocalLLaMA" };

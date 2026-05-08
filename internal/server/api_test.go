@@ -103,6 +103,26 @@ func TestCreateAndGetRule(t *testing.T) {
 	}
 }
 
+func TestCreateRuleNormalizesWebTargetURL(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	body := CreateRuleRequest{
+		Action: rules.ActionBlock,
+		Target: rules.Target{Kind: rules.TargetPath, Value: "https://X.com/Home"},
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/rules", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+	}
+	var created rules.Rule
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Target.Value != "x.com/home" {
+		t.Errorf("target value = %q, want x.com/home", created.Target.Value)
+	}
+}
+
 func TestCreateRuleInvalid(t *testing.T) {
 	_, hs := newTestServer(t)
 

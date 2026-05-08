@@ -88,13 +88,13 @@ func writeErr(w http.ResponseWriter, status int, code, msg string) {
 
 // StatusResponse is the JSON shape returned by GET /v1/status.
 type StatusResponse struct {
-	Version    string         `json:"version"`
-	Now        time.Time      `json:"now"`
-	Paused     bool           `json:"paused"`
-	PausedUntil *time.Time    `json:"paused_until,omitempty"`
-	Rules      []rules.Rule   `json:"rules"`
-	ActiveNow  []string       `json:"active_now"` // IDs of rules currently active
-	Settings   rules.Settings `json:"settings"`
+	Version     string         `json:"version"`
+	Now         time.Time      `json:"now"`
+	Paused      bool           `json:"paused"`
+	PausedUntil *time.Time     `json:"paused_until,omitempty"`
+	Rules       []rules.Rule   `json:"rules"`
+	ActiveNow   []string       `json:"active_now"` // IDs of rules currently active
+	Settings    rules.Settings `json:"settings"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +135,8 @@ type CreateRuleRequest struct {
 	Message  string                `json:"message,omitempty"`
 
 	// Schedule fields. Specify exactly one of:
-	For       string             `json:"for,omitempty"`       // duration, e.g. "2h" — converted to Until = now + d
-	Until     *time.Time         `json:"until,omitempty"`     // RFC3339 hard end
+	For       string                   `json:"for,omitempty"`   // duration, e.g. "2h" — converted to Until = now + d
+	Until     *time.Time               `json:"until,omitempty"` // RFC3339 hard end
 	Recurring *rules.RecurringSchedule `json:"recurring,omitempty"`
 	// (none of the three) → Schedule.Always
 
@@ -206,6 +206,9 @@ func (s *Server) buildRuleFromCreate(req CreateRuleRequest, now time.Time) (rule
 		Message:   req.Message,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if rule.Target.Kind == rules.TargetDomain || rule.Target.Kind == rules.TargetPath {
+		rule.Target.Value = rules.NormalizeWebTargetValue(rule.Target.Value)
 	}
 	// Default friction cooldown (5min) if unset on a friction rule.
 	if rule.Action == rules.ActionFriction && rule.Friction != nil && rule.Friction.Cooldown == 0 {
@@ -391,8 +394,8 @@ type FrictionResultRequest struct {
 
 // FrictionResultResponse echoes the resulting cooldown.
 type FrictionResultResponse struct {
-	Passed         bool       `json:"passed"`
-	CooldownUntil  *time.Time `json:"cooldown_until,omitempty"`
+	Passed        bool       `json:"passed"`
+	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
 }
 
 func (s *Server) handleFrictionResult(w http.ResponseWriter, r *http.Request) {

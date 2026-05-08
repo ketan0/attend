@@ -67,6 +67,18 @@ func TestCLIPathTargetAutoDetect(t *testing.T) {
 	}
 }
 
+func TestCLIPathTargetNormalizesURL(t *testing.T) {
+	stdout, _, err := runCLI(t, "block", "https://x.com/home")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var r rules.Rule
+	_ = json.Unmarshal([]byte(stdout), &r)
+	if r.Target.Kind != rules.TargetPath || r.Target.Value != "x.com/home" {
+		t.Errorf("target = %+v, want path x.com/home", r.Target)
+	}
+}
+
 func TestCLIAppPrefix(t *testing.T) {
 	stdout, _, err := runCLI(t, "block", "app:Slack")
 	if err != nil {
@@ -247,6 +259,9 @@ func TestParseTargetForms(t *testing.T) {
 	}{
 		{"twitter.com", rules.TargetDomain, "twitter.com", false},
 		{"reddit.com/r/all", rules.TargetPath, "reddit.com/r/all", false},
+		{"https://x.com/home", rules.TargetPath, "x.com/home", false},
+		{"domain:https://X.com", rules.TargetDomain, "x.com", false},
+		{"path:https://X.com/Home", rules.TargetPath, "x.com/home", false},
 		{"app:Slack", rules.TargetApp, "Slack", false},
 		{"domain:foo.com", rules.TargetDomain, "foo.com", false},
 		{"path:foo.com/bar", rules.TargetPath, "foo.com/bar", false},

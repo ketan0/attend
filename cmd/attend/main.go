@@ -31,8 +31,9 @@ func main() {
 }
 
 // exitCode maps an error to a CLI exit code:
-//   1 — user error / validation
-//   2 — daemon unreachable / system error
+//
+//	1 — user error / validation
+//	2 — daemon unreachable / system error
 func exitCode(err error) int {
 	var ae *client.APIError
 	if errors.As(err, &ae) {
@@ -151,15 +152,15 @@ func parseTarget(s string) (rules.Target, error) {
 		return rules.Target{Kind: rules.TargetApp, Value: v}, nil
 	}
 	if strings.HasPrefix(s, "domain:") {
-		return rules.Target{Kind: rules.TargetDomain, Value: strings.TrimPrefix(s, "domain:")}, nil
+		return rules.Target{Kind: rules.TargetDomain, Value: rules.NormalizeWebTargetValue(strings.TrimPrefix(s, "domain:"))}, nil
 	}
 	if strings.HasPrefix(s, "path:") {
-		return rules.Target{Kind: rules.TargetPath, Value: strings.TrimPrefix(s, "path:")}, nil
+		return rules.Target{Kind: rules.TargetPath, Value: rules.NormalizeWebTargetValue(strings.TrimPrefix(s, "path:"))}, nil
 	}
 	if strings.Contains(s, "/") {
-		return rules.Target{Kind: rules.TargetPath, Value: s}, nil
+		return rules.Target{Kind: rules.TargetPath, Value: rules.NormalizeWebTargetValue(s)}, nil
 	}
-	return rules.Target{Kind: rules.TargetDomain, Value: s}, nil
+	return rules.Target{Kind: rules.TargetDomain, Value: rules.NormalizeWebTargetValue(s)}, nil
 }
 
 func emit(cmd *cobra.Command, v any) error {
