@@ -5,48 +5,83 @@
 // Friction state (cooldowns) is stored locally per-rule under
 // `cooldowns[<rule.id>]` in chrome.storage.local.
 
-(async function attendContentScript() {
-  const url = new URL(window.location.href);
-  if (url.protocol !== "http:" && url.protocol !== "https:") return;
-
-  const data = await chrome.storage.local.get([
-    "rules", "activeNow", "paused", "cooldowns",
-  ]);
-  if (data.paused) return;
-
-  const active = new Set(data.activeNow || []);
-  const cooldowns = data.cooldowns || {};
-  const now = Date.now();
-
-  // Allow rules win over everything. If any allow rule matches, no
-  // overlay is shown — the page loads normally. This is what makes the
-  // "block reddit.com, allow reddit.com/r/LocalLLaMA" pattern work.
-  const matching = (data.rules || []).filter((r) =>
-    active.has(r.id) &&
-    targetMatches(r.target, url) &&
-    !(cooldowns[r.id] && cooldowns[r.id] > now)
-  );
-  if (matching.length === 0) return;
-
-  if (matching.some((r) => r.action === "allow")) return;
-
-  // Otherwise pick the strictest enforcement rule.
-  const priority = { block: 3, friction: 2, nudge: 1 };
-  const chosen = matching.reduce((acc, r) =>
-    !acc || priority[r.action] > priority[acc.action] ? r : acc, null);
-
-  if (chosen.action === "block") {
-    showBlock(chosen);
-  } else if (chosen.action === "friction") {
-    showFriction(chosen);
-  } else if (chosen.action === "nudge") {
-    showNudge(chosen);
-  }
-})();
-
 // targetMatches and parseDurationMs are defined in match.js, which loads
 // before this script per manifest.json's content_scripts ordering.
 const { targetMatches, parseDurationMs } = self.attendMatch;
+
+(function attendContentScript() {
+  if (window.__attendInjected) return;
+  window.__attendInjected = true;
+
+  let lastUrl = window.location.href;
+  // Once we mount a blocking overlay we wipe the DOM, so further re-evaluation
+  // is unnecessary (and would re-render the overlay on storage changes).
+  let mounted = false;
+
+  async function evaluate() {
+    if (mounted) return;
+    const url = new URL(window.location.href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+
+    const data = await chrome.storage.local.get([
+      "rules", "activeNow", "paused", "cooldowns",
+    ]);
+    if (data.paused) return;
+
+    const active = new Set(data.activeNow || []);
+    const cooldowns = data.cooldowns || {};
+    const now = Date.now();
+
+    // Allow rules win over everything. If any allow rule matches, no
+    // overlay is shown — the page loads normally. This is what makes the
+    // "block reddit.com, allow reddit.com/r/LocalLLaMA" pattern work.
+    const matching = (data.rules || []).filter((r) =>
+      active.has(r.id) &&
+      targetMatches(r.target, url) &&
+      !(cooldowns[r.id] && cooldowns[r.id] > now)
+    );
+    if (matching.length === 0) return;
+    if (matching.some((r) => r.action === "allow")) return;
+
+    const priority = { block: 3, friction: 2, nudge: 1 };
+    const chosen = matching.reduce((acc, r) =>
+      !acc || priority[r.action] > priority[acc.action] ? r : acc, null);
+
+    if (chosen.action === "block") {
+      showBlock(chosen);
+      mounted = true;
+    } else if (chosen.action === "friction") {
+      showFriction(chosen);
+      mounted = true;
+    } else if (chosen.action === "nudge") {
+      showNudge(chosen);
+    }
+  }
+
+  evaluate();
+
+  // SPA navigations (history.pushState/replaceState) don't trigger a new
+  // content script run, so document_start evaluation misses them. LinkedIn,
+  // for example, loads at "/" and then client-side-replaces the URL with
+  // "/feed" once it knows the user is logged in. Poll location.href so we
+  // catch the change and re-evaluate against the new URL.
+  setInterval(() => {
+    if (mounted) return;
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      evaluate();
+    }
+  }, 250);
+
+  // Re-evaluate if rules change while the page is open (e.g. user runs
+  // `attend block ...` in a terminal with a matching tab already loaded).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.rules || changes.activeNow || changes.paused || changes.cooldowns) {
+      evaluate();
+    }
+  });
+})();
 
 function clearPage() {
   try { window.stop(); } catch (e) { /* not all browsers */ }
