@@ -26,9 +26,10 @@ type IDGen func() string
 
 // Server is the HTTP API.
 type Server struct {
-	Store store.Store
-	Now   Clock
-	NewID IDGen
+	Store          store.Store
+	Now            Clock
+	NewID          IDGen
+	NewInjectionID IDGen
 	// Version is reported by /v1/status; harmless if empty.
 	Version string
 }
@@ -36,15 +37,20 @@ type Server struct {
 // New constructs a Server with sensible defaults.
 func New(s store.Store) *Server {
 	return &Server{
-		Store: s,
-		Now:   time.Now,
-		NewID: defaultID,
+		Store:          s,
+		Now:            time.Now,
+		NewID:          defaultID,
+		NewInjectionID: defaultInjectionID,
 	}
 }
 
 func defaultID() string {
 	// Short, prefixed, URL-safe-ish.
 	return "r_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:10]
+}
+
+func defaultInjectionID() string {
+	return "inj_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:10]
 }
 
 // Handler returns an http.Handler that mounts every API route.
@@ -60,6 +66,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/resume", s.handleResume)
 	mux.HandleFunc("POST /v1/friction/result", s.handleFrictionResult)
+
+	mux.HandleFunc("GET /v1/injections", s.handleListInjections)
+	mux.HandleFunc("POST /v1/injections", s.handleCreateInjection)
+	mux.HandleFunc("GET /v1/injections/{id}", s.handleGetInjection)
+	mux.HandleFunc("DELETE /v1/injections/{id}", s.handleDeleteInjection)
 	return mux
 }
 
@@ -88,13 +99,14 @@ func writeErr(w http.ResponseWriter, status int, code, msg string) {
 
 // StatusResponse is the JSON shape returned by GET /v1/status.
 type StatusResponse struct {
-	Version     string         `json:"version"`
-	Now         time.Time      `json:"now"`
-	Paused      bool           `json:"paused"`
-	PausedUntil *time.Time     `json:"paused_until,omitempty"`
-	Rules       []rules.Rule   `json:"rules"`
-	ActiveNow   []string       `json:"active_now"` // IDs of rules currently active
-	Settings    rules.Settings `json:"settings"`
+	Version     string            `json:"version"`
+	Now         time.Time         `json:"now"`
+	Paused      bool              `json:"paused"`
+	PausedUntil *time.Time        `json:"paused_until,omitempty"`
+	Rules       []rules.Rule      `json:"rules"`
+	ActiveNow   []string          `json:"active_now"` // IDs of rules currently active
+	Settings    rules.Settings    `json:"settings"`
+	Injections  []rules.Injection `json:"injections"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +127,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Rules:       all,
 		ActiveNow:   active,
 		Settings:    settings,
+		Injections:  s.Store.ListInjections(),
 	})
 }
 
@@ -456,4 +469,98 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// --- /v1/injections ----------------------------------------------------------
+
+// CreateInjectionRequest is the body for POST /v1/injections. If ID names an
+// existing injection it is overwritten (upsert); if ID is empty, a new ID is
+// assigned.
+type CreateInjectionRequest struct {
+	ID        string               `json:"id,omitempty"`
+	Name      string               `json:"name,omitempty"`
+	Match     []rules.MatchPattern `json:"match"`
+	Exclude   []rules.MatchPattern `json:"exclude,omitempty"`
+	RunAt     rules.RunAt          `json:"run_at,omitempty"`
+	World     rules.World          `json:"world,omitempty"`
+	AllFrames bool                 `json:"all_frames,omitempty"`
+	JS        string               `json:"js,omitempty"`
+	CSS       string               `json:"css,omitempty"`
+}
+
+func (s *Server) handleListInjections(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Store.ListInjections())
+}
+
+func (s *Server) handleCreateInjection(w http.ResponseWriter, r *http.Request) {
+	var req CreateInjectionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+
+	now := s.Now()
+	id := req.ID
+	createdAt := now
+	if id == "" {
+		id = s.NewInjectionID()
+	} else if existing, ok := s.Store.GetInjection(id); ok {
+		createdAt = existing.CreatedAt
+	}
+
+	runAt := req.RunAt
+	if runAt == "" {
+		runAt = rules.RunAtIdle
+	}
+	world := req.World
+	if world == "" {
+		world = rules.WorldMain
+	}
+
+	inj := rules.Injection{
+		ID:        id,
+		Name:      req.Name,
+		Match:     req.Match,
+		Exclude:   req.Exclude,
+		RunAt:     runAt,
+		World:     world,
+		AllFrames: req.AllFrames,
+		JS:        req.JS,
+		CSS:       req.CSS,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	}
+	if err := inj.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_injection", err.Error())
+		return
+	}
+	if err := s.Store.PutInjection(inj); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_write", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, inj)
+}
+
+func (s *Server) handleGetInjection(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	inj, ok := s.Store.GetInjection(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "no injection with id "+id)
+		return
+	}
+	writeJSON(w, http.StatusOK, inj)
+}
+
+func (s *Server) handleDeleteInjection(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ok, err := s.Store.DeleteInjection(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_write", err.Error())
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "no injection with id "+id)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }

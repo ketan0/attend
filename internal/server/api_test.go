@@ -26,12 +26,17 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	}
 
 	idCounter := 0
+	injCounter := 0
 	srv := &Server{
 		Store: st,
 		Now:   func() time.Time { return fixedTime },
 		NewID: func() string {
 			idCounter++
 			return "r_test" + string(rune('0'+idCounter))
+		},
+		NewInjectionID: func() string {
+			injCounter++
+			return "inj_test" + string(rune('0'+injCounter))
 		},
 	}
 	hs := httptest.NewServer(srv.Handler())
@@ -497,5 +502,121 @@ func TestNotFound(t *testing.T) {
 	resp, _ = doJSON(t, "DELETE", hs.URL+"/v1/rules/nope", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestInjectionCreateGetDelete(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	body := CreateInjectionRequest{
+		Name:  "github dark",
+		Match: []rules.MatchPattern{"https://*.github.com/*"},
+		JS:    "console.log('hi')",
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/injections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", resp.StatusCode, raw)
+	}
+	var created rules.Injection
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.ID == "" || !strings.HasPrefix(created.ID, "inj_") {
+		t.Errorf("ID = %q, want inj_*", created.ID)
+	}
+	if created.RunAt != rules.RunAtIdle {
+		t.Errorf("default run_at = %q, want document_idle", created.RunAt)
+	}
+	if created.World != rules.WorldMain {
+		t.Errorf("default world = %q, want MAIN", created.World)
+	}
+	if !created.CreatedAt.Equal(fixedTime) {
+		t.Errorf("created_at = %v, want %v", created.CreatedAt, fixedTime)
+	}
+
+	resp, raw = doJSON(t, "GET", hs.URL+"/v1/injections/"+created.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", resp.StatusCode, raw)
+	}
+	var got rules.Injection
+	_ = json.Unmarshal(raw, &got)
+	if got.ID != created.ID {
+		t.Errorf("ID = %q, want %q", got.ID, created.ID)
+	}
+
+	resp, raw = doJSON(t, "DELETE", hs.URL+"/v1/injections/"+created.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", resp.StatusCode, raw)
+	}
+	resp, _ = doJSON(t, "GET", hs.URL+"/v1/injections/"+created.ID, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("after delete, expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestInjectionUpsertById(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	first := CreateInjectionRequest{
+		ID:    "inj_pinned",
+		Match: []rules.MatchPattern{"https://github.com/*"},
+		JS:    "1",
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/injections", first)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first create: %d %s", resp.StatusCode, raw)
+	}
+	var v1 rules.Injection
+	_ = json.Unmarshal(raw, &v1)
+
+	second := CreateInjectionRequest{
+		ID:    "inj_pinned",
+		Match: []rules.MatchPattern{"https://github.com/*"},
+		JS:    "2",
+	}
+	resp, raw = doJSON(t, "POST", hs.URL+"/v1/injections", second)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upsert: %d %s", resp.StatusCode, raw)
+	}
+	var v2 rules.Injection
+	_ = json.Unmarshal(raw, &v2)
+	if v2.JS != "2" {
+		t.Errorf("JS = %q, want 2", v2.JS)
+	}
+	if !v2.CreatedAt.Equal(v1.CreatedAt) {
+		t.Errorf("upsert should preserve created_at: %v vs %v", v2.CreatedAt, v1.CreatedAt)
+	}
+}
+
+func TestInjectionInvalidMatch(t *testing.T) {
+	_, hs := newTestServer(t)
+	body := CreateInjectionRequest{
+		Match: []rules.MatchPattern{"not a pattern"},
+		JS:    "x",
+	}
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/injections", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d (body=%s)", resp.StatusCode, raw)
+	}
+}
+
+func TestStatusIncludesInjections(t *testing.T) {
+	_, hs := newTestServer(t)
+	body := CreateInjectionRequest{
+		Match: []rules.MatchPattern{"<all_urls>"},
+		CSS:   "body{}",
+	}
+	_, _ = doJSON(t, "POST", hs.URL+"/v1/injections", body)
+
+	resp, raw := doJSON(t, "GET", hs.URL+"/v1/status", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d %s", resp.StatusCode, raw)
+	}
+	var s StatusResponse
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Injections) != 1 {
+		t.Errorf("status injections = %d, want 1", len(s.Injections))
 	}
 }

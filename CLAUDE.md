@@ -38,7 +38,10 @@ extension/        Chromium MV3 extension. background.js polls
                   /v1/status into chrome.storage.local; content.js reads
                   storage at document_start and renders overlays.
                   match.js holds the URL→rule matcher used in both the
-                  extension and node tests.
+                  extension and node tests. Injections are reconciled
+                  into chrome.userScripts after every poll (requires
+                  Chrome Developer Mode for JS); CSS goes through a
+                  webNavigation.onCommitted dispatcher.
 
 swift/AttendFriction/   Minimal SwiftUI native friction screen. Single
                         main.swift compiled with build.sh. Not yet
@@ -130,6 +133,7 @@ new feature, and the CLI/extension need to support it.
 | A new target kind | `rules/types.go` (TargetKind + Valid + Canonical), `internal/hosts` or `appmon` (whichever enforces), `extension/match.js` `targetMatches`, `cmd/attend/main.go` `parseTarget`. |
 | A new friction level | `rules/types.go` (FrictionLevel const + Valid), `swift/AttendFriction/main.swift` (render view), `extension/content.js` (renderXxx function), SKILL.md. |
 | A new schedule mode | `rules/types.go` (ScheduleKind + Validate), `rules/schedule.go` (IsActive case), `cmd/attend/main.go` flag wiring, SKILL.md. |
+| A new injection field | `rules/injection.go` (struct + Validate), `internal/server/api.go` (`CreateInjectionRequest` + handler), `internal/client/client.go`, `cmd/attend/inject.go` (flag + tests), `extension/background.js` (`reconcileUserScripts` mapping or webNav dispatcher), SKILL.md. |
 
 ## Testing approach
 

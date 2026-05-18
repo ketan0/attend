@@ -145,3 +145,43 @@ func IsAPIError(err error, code string) bool {
 	}
 	return ae != nil && ae.Code == code
 }
+
+func TestInjectionsRoundTrip(t *testing.T) {
+	c, stop := startBackend(t)
+	defer stop()
+
+	created, err := c.CreateInjection(context.Background(), server.CreateInjectionRequest{
+		Name:  "test",
+		Match: []rules.MatchPattern{"https://example.com/*"},
+		JS:    "console.log(1)",
+	})
+	if err != nil {
+		t.Fatalf("CreateInjection: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("missing ID")
+	}
+
+	got, err := c.GetInjection(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetInjection: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("id mismatch")
+	}
+
+	list, err := c.ListInjections(context.Background())
+	if err != nil {
+		t.Fatalf("ListInjections: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1, got %d", len(list))
+	}
+
+	if err := c.DeleteInjection(context.Background(), created.ID); err != nil {
+		t.Fatalf("DeleteInjection: %v", err)
+	}
+	if _, err := c.GetInjection(context.Background(), created.ID); err == nil {
+		t.Errorf("expected error after delete")
+	}
+}

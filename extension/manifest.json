@@ -3,7 +3,7 @@
   "name": "attend",
   "version": "0.1.0",
   "description": "In-browser enforcement for attend rules — path-level blocking and friction.",
-  "permissions": ["storage", "alarms"],
+  "permissions": ["storage", "alarms", "scripting", "userScripts", "webNavigation"],
   "host_permissions": [
     "http://127.0.0.1:7723/*",
     "<all_urls>"

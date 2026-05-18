@@ -184,6 +184,88 @@ Common error codes you should handle:
 - **Don't quote the JSON schedule with newlines/tabs that your shell will mangle.** Pass real newlines via `--schedule-file` if it's complex.
 - **Don't assume domain rules apply to in-browser path-level patterns.** They don't (only `path:` targets do). Domain rules block at the network layer, which is browser-agnostic but coarser.
 
+## Injections — persistent page modifications
+
+`attend inject` lets you register persistent userscript-style JS/CSS that the
+browser extension applies to every page load matching a URL pattern. This is
+the agent-driven equivalent of Tampermonkey: write a script once, have it run
+on every reload.
+
+**Requires Chrome Developer Mode** to be enabled (one-time, at
+chrome://extensions). Without it, JS injections silently no-op; CSS still
+works. The extension logs a warning to its service-worker console.
+
+### Match patterns
+
+Patterns use Chrome's match-pattern syntax (the same thing extension
+manifests use):
+
+| Pattern | Matches |
+|---|---|
+| `<all_urls>` | every page |
+| `https://github.com/*` | exact host, any path |
+| `https://*.github.com/*` | host *and* any subdomain |
+| `*://example.com/*` | http or https |
+| `https://example.com/api/*/users` | path glob (`*` = any chars in one segment) |
+| `file:///*` | local files |
+
+The daemon validates patterns at submission. Malformed patterns → 400.
+
+### Commands
+
+```
+attend inject add --match <pattern> [--match <pattern>...] [--exclude <pattern>...]
+                  (--js <code> | --js-file <path>) [(--css <code> | --css-file <path>)]
+                  [--name <label>] [--run-at document_start|document_end|document_idle]
+                  [--world MAIN|ISOLATED] [--all-frames] [--id <stable-id>]
+attend inject ls
+attend inject get <id>
+attend inject rm <id>
+```
+
+- `--js` / `--css`: inline payload (string).
+- `--js-file` / `--css-file`: file path. Use `-` to read stdin.
+- `--id`: pass a stable ID to upsert (overwrites the existing injection with
+  the same ID instead of creating a new one).
+- `--run-at`: defaults to `document_idle`. Use `document_start` for true
+  pre-render injection (CSS dispatch is best-effort early; JS via
+  `chrome.userScripts` is native).
+- `--world`: defaults to `MAIN` (access to page globals like
+  `window.React`). `ISOLATED` runs in a separate JS realm.
+
+### Examples
+
+```bash
+# Hide a distracting sidebar on GitHub
+attend inject add \
+  --match 'https://github.com/*' \
+  --css '.js-feed-item-component { display: none !important; }' \
+  --name "github calmer"
+
+# Auto-skip YouTube ads
+attend inject add \
+  --match 'https://*.youtube.com/*' \
+  --js-file ./yt-skipper.js \
+  --run-at document_end
+
+# Inject from stdin (handy for one-shot agent edits)
+echo 'document.title = "Focus";' | attend inject add \
+  --match 'https://example.com/*' --js-file -
+
+# Update by re-using the same id
+attend inject add --id inj_my_script --match 'https://example.com/*' --js 'v2'
+```
+
+### Don'ts
+
+- **Don't use injections to enforce blocking.** That's what `block` rules
+  are for. Injections are page-modifications.
+- **Don't paste untrusted code.** Injections run with full page access in
+  MAIN world.
+- **Don't assume run_at: document_start is instantaneous for CSS.** CSS
+  goes through a dispatcher on navigation commit; JS is registered natively
+  with chrome.userScripts and is truly synchronous.
+
 ## Reference: full command surface
 
 ```
@@ -198,6 +280,10 @@ attend update <id> [--for D | --until T | --schedule-json J | --always | --messa
 attend pause [--for D | --until T]
 attend resume
 attend status
+attend inject add --match P [--match P...] [--exclude P...] (--js S | --js-file F) [--css S | --css-file F] [--name N] [--run-at R] [--world W] [--all-frames] [--id ID]
+attend inject ls
+attend inject get <id>
+attend inject rm <id>
 ```
 
 All commands accept `--url <baseURL>` if attendd is on a non-default port

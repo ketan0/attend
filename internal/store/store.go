@@ -23,6 +23,11 @@ type Store interface {
 	Delete(id string) (bool, error)
 	Settings() rules.Settings
 	PutSettings(s rules.Settings) error
+
+	ListInjections() []rules.Injection
+	GetInjection(id string) (rules.Injection, bool)
+	PutInjection(i rules.Injection) error
+	DeleteInjection(id string) (bool, error)
 }
 
 // FileStore stores rules as a single JSON document on disk. All public
@@ -31,6 +36,7 @@ type FileStore struct {
 	path     string
 	mu       sync.RWMutex
 	rs       map[string]rules.Rule
+	injs     map[string]rules.Injection
 	settings rules.Settings
 	// onChange, if set, is called (non-blocking) after every successful
 	// write so the daemon can re-enforce promptly.
@@ -51,7 +57,11 @@ func Open(path string) (*FileStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir parent: %w", err)
 	}
-	s := &FileStore{path: path, rs: map[string]rules.Rule{}}
+	s := &FileStore{
+		path: path,
+		rs:   map[string]rules.Rule{},
+		injs: map[string]rules.Injection{},
+	}
 
 	b, err := os.ReadFile(path)
 	if errIsNotExist(err) {
@@ -70,6 +80,9 @@ func Open(path string) (*FileStore, error) {
 	}
 	for _, r := range doc.Rules {
 		s.rs[r.ID] = r
+	}
+	for _, i := range doc.Injections {
+		s.injs[i.ID] = i
 	}
 	s.settings = doc.Settings
 	return s, nil
@@ -125,6 +138,54 @@ func (s *FileStore) Delete(id string) (bool, error) {
 	return true, s.flushLocked()
 }
 
+// ListInjections returns injections in stable order (by created_at asc, then ID).
+func (s *FileStore) ListInjections() []rules.Injection {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]rules.Injection, 0, len(s.injs))
+	for _, i := range s.injs {
+		out = append(out, i)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// GetInjection returns the injection with `id`, or false if not present.
+func (s *FileStore) GetInjection(id string) (rules.Injection, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	i, ok := s.injs[id]
+	return i, ok
+}
+
+// PutInjection inserts or replaces the injection with id == i.ID.
+func (s *FileStore) PutInjection(i rules.Injection) error {
+	if i.ID == "" {
+		return fmt.Errorf("injection id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.injs[i.ID] = i
+	return s.flushLocked()
+}
+
+// DeleteInjection removes the injection and persists. Returns false if it did
+// not exist.
+func (s *FileStore) DeleteInjection(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.injs[id]; !ok {
+		return false, nil
+	}
+	delete(s.injs, id)
+	return true, s.flushLocked()
+}
+
 // Settings returns a snapshot of daemon settings.
 func (s *FileStore) Settings() rules.Settings {
 	s.mu.RLock()
@@ -142,9 +203,10 @@ func (s *FileStore) PutSettings(set rules.Settings) error {
 
 // fileDoc is the on-disk shape.
 type fileDoc struct {
-	Version  int            `json:"version"`
-	Settings rules.Settings `json:"settings"`
-	Rules    []rules.Rule   `json:"rules"`
+	Version    int               `json:"version"`
+	Settings   rules.Settings    `json:"settings"`
+	Rules      []rules.Rule      `json:"rules"`
+	Injections []rules.Injection `json:"injections,omitempty"`
 }
 
 // notifyChangeLocked schedules onChange asynchronously. Caller must hold the
@@ -160,11 +222,20 @@ func (s *FileStore) notifyChangeLocked() {
 // flushLocked writes the current state to disk atomically. Caller must hold
 // the write lock.
 func (s *FileStore) flushLocked() error {
-	doc := fileDoc{Version: 1, Settings: s.settings, Rules: make([]rules.Rule, 0, len(s.rs))}
+	doc := fileDoc{
+		Version:    1,
+		Settings:   s.settings,
+		Rules:      make([]rules.Rule, 0, len(s.rs)),
+		Injections: make([]rules.Injection, 0, len(s.injs)),
+	}
 	for _, r := range s.rs {
 		doc.Rules = append(doc.Rules, r)
 	}
 	sort.Slice(doc.Rules, func(i, j int) bool { return doc.Rules[i].ID < doc.Rules[j].ID })
+	for _, i := range s.injs {
+		doc.Injections = append(doc.Injections, i)
+	}
+	sort.Slice(doc.Injections, func(i, j int) bool { return doc.Injections[i].ID < doc.Injections[j].ID })
 
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

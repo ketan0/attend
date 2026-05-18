@@ -1,7 +1,13 @@
 // Run with: node extension/match.test.js
 // Exits non-zero on failure.
 
-const { targetMatches, parseDurationMs, pickEffective } = require("./match.js");
+const {
+  targetMatches,
+  parseDurationMs,
+  pickEffective,
+  compileMatchPattern,
+  injectionMatches,
+} = require("./match.js");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -119,4 +125,66 @@ test("parseDurationMs — invalid → null", () => {
   assert.equal(parseDurationMs(""), null);
   assert.equal(parseDurationMs("banana"), null);
   assert.equal(parseDurationMs(null), null);
+});
+
+test("compileMatchPattern — <all_urls>", () => {
+  const m = compileMatchPattern("<all_urls>");
+  assert.equal(m("https://example.com/"), true);
+  assert.equal(m("file:///etc/hosts"), true);
+});
+
+test("compileMatchPattern — exact host", () => {
+  const m = compileMatchPattern("https://github.com/*");
+  assert.equal(m("https://github.com/"), true);
+  assert.equal(m("https://github.com/foo/bar"), true);
+  assert.equal(m("https://www.github.com/"), false);
+  assert.equal(m("http://github.com/"), false);
+});
+
+test("compileMatchPattern — *. subdomain matches apex too", () => {
+  const m = compileMatchPattern("https://*.github.com/*");
+  assert.equal(m("https://github.com/"), true);
+  assert.equal(m("https://api.github.com/foo"), true);
+  assert.equal(m("https://deep.api.github.com/foo"), true);
+  assert.equal(m("https://example.com/"), false);
+});
+
+test("compileMatchPattern — any scheme", () => {
+  const m = compileMatchPattern("*://example.com/*");
+  assert.equal(m("https://example.com/"), true);
+  assert.equal(m("http://example.com/"), true);
+  assert.equal(m("ftp://example.com/"), false);
+});
+
+test("compileMatchPattern — path glob", () => {
+  const m = compileMatchPattern("https://example.com/api/*/users");
+  assert.equal(m("https://example.com/api/v1/users"), true);
+  assert.equal(m("https://example.com/api/v2/users"), true);
+  assert.equal(m("https://example.com/api/v1/orgs"), false);
+});
+
+test("compileMatchPattern — file scheme", () => {
+  const m = compileMatchPattern("file:///*");
+  assert.equal(m("file:///etc/hosts"), true);
+  assert.equal(m("https://example.com/"), false);
+});
+
+test("compileMatchPattern — invalid pattern is no-match, not crash", () => {
+  const m = compileMatchPattern("garbage");
+  assert.equal(m("https://example.com/"), false);
+});
+
+test("injectionMatches — match wins, exclude vetos", () => {
+  const inj = {
+    match: ["https://*.github.com/*"],
+    exclude: ["https://api.github.com/*"],
+  };
+  assert.equal(injectionMatches(inj, "https://github.com/"), true);
+  assert.equal(injectionMatches(inj, "https://x.github.com/repo"), true);
+  assert.equal(injectionMatches(inj, "https://api.github.com/users"), false);
+  assert.equal(injectionMatches(inj, "https://example.com/"), false);
+});
+
+test("injectionMatches — empty match never matches", () => {
+  assert.equal(injectionMatches({ match: [] }, "https://example.com/"), false);
 });

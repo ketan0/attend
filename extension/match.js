@@ -81,5 +81,67 @@
     return total || null;
   }
 
-  return { targetMatches, parseDurationMs, pickEffective };
+  // compileMatchPattern returns a function (urlString) -> boolean for a
+  // Chrome match pattern. Used by the CSS dispatcher; JS injections go
+  // through chrome.userScripts which validates patterns natively.
+  //
+  // Grammar:
+  //   <all_urls>
+  //   <scheme>://<host>/<path>
+  //     scheme = "*" (= http or https) | http | https | file | ftp
+  //     host   = "*" | "*." domain | exact domain | "" (file only)
+  //     path   = glob (only "*" is special; matches any chars)
+  function compileMatchPattern(pattern) {
+    if (pattern === "<all_urls>") {
+      return function () { return true; };
+    }
+    const m = String(pattern).match(/^(\*|http|https|file|ftp):\/\/([^/]*)(\/.*)$/);
+    if (!m) return function () { return false; };
+    const scheme = m[1], hostPat = m[2], pathPat = m[3];
+
+    const schemeRe = scheme === "*" ? /^https?:$/ : new RegExp("^" + scheme + ":$");
+
+    let hostRe;
+    if (scheme === "file") {
+      if (hostPat !== "") return function () { return false; };
+      hostRe = /^$/;
+    } else if (hostPat === "*") {
+      hostRe = /.*/;
+    } else if (hostPat.startsWith("*.")) {
+      const suffix = escapeRegExp(hostPat.slice(2));
+      hostRe = new RegExp("^([^.]+(\\.[^.]+)*\\.)?" + suffix + "$");
+    } else {
+      hostRe = new RegExp("^" + escapeRegExp(hostPat) + "$");
+    }
+
+    const pathRe = new RegExp(
+      "^" + pathPat.split("*").map(escapeRegExp).join(".*") + "$"
+    );
+
+    return function (urlStr) {
+      let u;
+      try { u = new URL(urlStr); } catch (_) { return false; }
+      return schemeRe.test(u.protocol)
+        && hostRe.test(u.hostname)
+        && pathRe.test(u.pathname + u.search);
+    };
+  }
+
+  // injectionMatches returns true if any of inj.match matches the URL and
+  // none of inj.exclude does.
+  function injectionMatches(injection, urlStr) {
+    const matchers = (injection.match || []).map(compileMatchPattern);
+    if (!matchers.some(function (f) { return f(urlStr); })) return false;
+    const excluders = (injection.exclude || []).map(compileMatchPattern);
+    if (excluders.some(function (f) { return f(urlStr); })) return false;
+    return true;
+  }
+
+  return {
+    targetMatches: targetMatches,
+    parseDurationMs: parseDurationMs,
+    pickEffective: pickEffective,
+    compileMatchPattern: compileMatchPattern,
+    injectionMatches: injectionMatches,
+  };
 });

@@ -164,6 +164,87 @@ func TestStoreConcurrentSafe(t *testing.T) {
 	}
 }
 
+func sampleInjection(id string) rules.Injection {
+	return rules.Injection{
+		ID:        id,
+		Name:      id,
+		Match:     []rules.MatchPattern{"https://*.example.com/*"},
+		RunAt:     rules.RunAtIdle,
+		World:     rules.WorldMain,
+		JS:        "console.log('" + id + "')",
+		CreatedAt: time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestStoreInjectionsCRUD(t *testing.T) {
+	s := tmpStore(t)
+	if got := s.ListInjections(); len(got) != 0 {
+		t.Fatalf("expected empty, got %d", len(got))
+	}
+	if err := s.PutInjection(sampleInjection("inj_1")); err != nil {
+		t.Fatalf("PutInjection: %v", err)
+	}
+	if got, ok := s.GetInjection("inj_1"); !ok || got.ID != "inj_1" {
+		t.Fatalf("GetInjection: ok=%v id=%q", ok, got.ID)
+	}
+	ok, err := s.DeleteInjection("inj_1")
+	if err != nil || !ok {
+		t.Fatalf("DeleteInjection: ok=%v err=%v", ok, err)
+	}
+	if _, exists := s.GetInjection("inj_1"); exists {
+		t.Errorf("expected gone")
+	}
+	ok, _ = s.DeleteInjection("nope")
+	if ok {
+		t.Errorf("expected ok=false for missing id")
+	}
+}
+
+func TestStoreInjectionsPersistAcrossOpens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.json")
+
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open 1: %v", err)
+	}
+	if err := s1.PutInjection(sampleInjection("inj_a")); err != nil {
+		t.Fatalf("PutInjection: %v", err)
+	}
+	if err := s1.Put(sampleRule("r_1")); err != nil {
+		t.Fatalf("Put rule: %v", err)
+	}
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open 2: %v", err)
+	}
+	if got := len(s2.ListInjections()); got != 1 {
+		t.Errorf("injections: want 1, got %d", got)
+	}
+	if got := len(s2.List()); got != 1 {
+		t.Errorf("rules: want 1, got %d", got)
+	}
+}
+
+func TestStoreInjectionsChangeHook(t *testing.T) {
+	s := tmpStore(t)
+	done := make(chan struct{}, 1)
+	s.SetChangeHook(func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+	_ = s.PutInjection(sampleInjection("inj_1"))
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Errorf("expected change hook to fire")
+	}
+}
+
 func intStr(i int) string {
 	if i == 0 {
 		return "0"

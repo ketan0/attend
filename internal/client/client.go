@@ -141,3 +141,27 @@ func (c *Client) Resume(ctx context.Context) (rules.Settings, error) {
 	var out rules.Settings
 	return out, c.doJSON(ctx, "POST", "/v1/resume", nil, &out)
 }
+
+// ListInjections fetches all persistent page injections.
+func (c *Client) ListInjections(ctx context.Context) ([]rules.Injection, error) {
+	var out []rules.Injection
+	return out, c.doJSON(ctx, "GET", "/v1/injections", nil, &out)
+}
+
+// CreateInjection upserts an injection. If req.ID is set and matches an
+// existing injection, it is overwritten; otherwise a new ID is assigned.
+func (c *Client) CreateInjection(ctx context.Context, req server.CreateInjectionRequest) (rules.Injection, error) {
+	var out rules.Injection
+	return out, c.doJSON(ctx, "POST", "/v1/injections", req, &out)
+}
+
+// GetInjection fetches one injection by ID.
+func (c *Client) GetInjection(ctx context.Context, id string) (rules.Injection, error) {
+	var out rules.Injection
+	return out, c.doJSON(ctx, "GET", "/v1/injections/"+id, nil, &out)
+}
+
+// DeleteInjection deletes by ID.
+func (c *Client) DeleteInjection(ctx context.Context, id string) error {
+	return c.doJSON(ctx, "DELETE", "/v1/injections/"+id, nil, nil)
+}

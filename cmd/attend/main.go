@@ -70,6 +70,7 @@ func newRoot() *cobra.Command {
 		newPauseCmd(apiClient),
 		newResumeCmd(apiClient),
 		newStatusCmd(apiClient),
+		newInjectCmd(apiClient),
 	)
 	return root
 }
