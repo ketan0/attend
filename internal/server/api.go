@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ketan0/attend/internal/jobs"
 	"github.com/ketan0/attend/internal/rules"
 	"github.com/ketan0/attend/internal/store"
 )
@@ -30,6 +32,10 @@ type Server struct {
 	Now            Clock
 	NewID          IDGen
 	NewInjectionID IDGen
+	// PageJobs brokers ephemeral RPC requests between the CLI and the
+	// browser extension (tab dumps, page execs). Created by New; tests can
+	// substitute.
+	PageJobs *jobs.Queue
 	// Version is reported by /v1/status; harmless if empty.
 	Version string
 }
@@ -41,6 +47,7 @@ func New(s store.Store) *Server {
 		Now:            time.Now,
 		NewID:          defaultID,
 		NewInjectionID: defaultInjectionID,
+		PageJobs:       jobs.New(16),
 	}
 }
 
@@ -71,6 +78,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/injections", s.handleCreateInjection)
 	mux.HandleFunc("GET /v1/injections/{id}", s.handleGetInjection)
 	mux.HandleFunc("DELETE /v1/injections/{id}", s.handleDeleteInjection)
+
+	mux.HandleFunc("POST /v1/page/jobs", s.handleSubmitPageJob)
+	mux.HandleFunc("GET /v1/page/jobs/next", s.handleNextPageJob)
+	mux.HandleFunc("POST /v1/page/jobs/{id}/result", s.handlePageJobResult)
 	return mux
 }
 
@@ -563,4 +574,111 @@ func (s *Server) handleDeleteInjection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// --- /v1/page/jobs (RPC broker for the extension) ---------------------------
+
+// SubmitPageJobRequest is the wire body for POST /v1/page/jobs.
+type SubmitPageJobRequest struct {
+	Kind    string          `json:"kind"`              // e.g. "tabs.list", "page.dump", "page.exec"
+	Payload json.RawMessage `json:"payload,omitempty"` // kind-specific; opaque to the daemon
+	Timeout string          `json:"timeout,omitempty"` // Go duration; default 30s, max 5m
+}
+
+// defaultSubmitTimeout / maxSubmitTimeout cap how long the daemon will hold
+// a pending submission open. The CLI's own context typically caps this
+// tighter; this is a defense-in-depth bound on server-side goroutine
+// occupancy.
+const (
+	defaultSubmitTimeout = 30 * time.Second
+	maxSubmitTimeout     = 5 * time.Minute
+)
+
+func (s *Server) handleSubmitPageJob(w http.ResponseWriter, r *http.Request) {
+	var req SubmitPageJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Kind) == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_input", "kind is required")
+		return
+	}
+	to := defaultSubmitTimeout
+	if req.Timeout != "" {
+		d, err := time.ParseDuration(req.Timeout)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_duration", err.Error())
+			return
+		}
+		if d <= 0 || d > maxSubmitTimeout {
+			writeErr(w, http.StatusBadRequest, "bad_duration",
+				fmt.Sprintf("timeout must be between 0 and %s", maxSubmitTimeout))
+			return
+		}
+		to = d
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), to)
+	defer cancel()
+
+	result, err := s.PageJobs.Submit(ctx, req.Kind, req.Payload)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeErr(w, http.StatusGatewayTimeout, "timeout",
+				"no consumer (browser extension) handled the job within "+to.String())
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			writeErr(w, http.StatusRequestTimeout, "canceled", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "invalid_input", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// defaultConsumerWait is the long-poll timeout for the extension's
+// /v1/page/jobs/next request when ?wait= is omitted.
+const defaultConsumerWait = 25 * time.Second
+
+func (s *Server) handleNextPageJob(w http.ResponseWriter, r *http.Request) {
+	wait := defaultConsumerWait
+	if q := r.URL.Query().Get("wait"); q != "" {
+		d, err := time.ParseDuration(q)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_duration", err.Error())
+			return
+		}
+		if d <= 0 || d > maxSubmitTimeout {
+			writeErr(w, http.StatusBadRequest, "bad_duration",
+				fmt.Sprintf("wait must be between 0 and %s", maxSubmitTimeout))
+			return
+		}
+		wait = d
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), wait)
+	defer cancel()
+	job, ok := s.PageJobs.Next(ctx)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) handlePageJobResult(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var result jobs.Result
+	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	if !s.PageJobs.PostResult(id, result) {
+		writeErr(w, http.StatusNotFound, "not_found",
+			"no pending submitter for job "+id+" (timed out or unknown)")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"delivered": true})
 }

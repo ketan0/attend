@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ketan0/attend/internal/jobs"
 	"github.com/ketan0/attend/internal/rules"
 	"github.com/ketan0/attend/internal/server"
 )
@@ -22,11 +23,13 @@ type Client struct {
 	HTTP    *http.Client
 }
 
-// New constructs a Client with sensible defaults.
+// New constructs a Client with sensible defaults. Page-job submissions need
+// to outlast the daemon-side default timeout (30s), so the HTTP client has a
+// generous read deadline of its own.
 func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: baseURL,
-		HTTP:    &http.Client{Timeout: 10 * time.Second},
+		HTTP:    &http.Client{Timeout: 6 * time.Minute},
 	}
 }
 
@@ -164,4 +167,11 @@ func (c *Client) GetInjection(ctx context.Context, id string) (rules.Injection, 
 // DeleteInjection deletes by ID.
 func (c *Client) DeleteInjection(ctx context.Context, id string) error {
 	return c.doJSON(ctx, "DELETE", "/v1/injections/"+id, nil, nil)
+}
+
+// SubmitPageJob enqueues an ephemeral job for the browser extension and
+// blocks until the extension posts a result or the daemon times out.
+func (c *Client) SubmitPageJob(ctx context.Context, req server.SubmitPageJobRequest) (jobs.Result, error) {
+	var out jobs.Result
+	return out, c.doJSON(ctx, "POST", "/v1/page/jobs", req, &out)
 }

@@ -191,9 +191,20 @@ browser extension applies to every page load matching a URL pattern. This is
 the agent-driven equivalent of Tampermonkey: write a script once, have it run
 on every reload.
 
-**Requires Chrome Developer Mode** to be enabled (one-time, at
-chrome://extensions). Without it, JS injections silently no-op; CSS still
-works. The extension logs a warning to its service-worker console.
+**Two one-time Chrome toggles** are required for JS injections. CSS works
+without them. If a user reports "the JS injection didn't fire," the toggles
+are the cause 99% of the time:
+
+1. **Developer Mode** — `chrome://extensions/`, top-right toggle.
+2. **Allow User Scripts** — `chrome://extensions/` → attend → Details →
+   scroll to the toggle. This is a per-extension permission added in Chrome
+   ~125; older guides only mention #1.
+
+Without these, `typeof chrome.userScripts === "undefined"` in the
+extension's service worker and JS registrations silently no-op. Diagnose by
+opening the SW console (Details → "service worker" link) and running
+`typeof chrome.userScripts` — if `"undefined"`, the user is missing toggle
+#2.
 
 ### Match patterns
 
@@ -266,6 +277,88 @@ attend inject add --id inj_my_script --match 'https://example.com/*' --js 'v2'
   goes through a dispatcher on navigation commit; JS is registered natively
   with chrome.userScripts and is truly synchronous.
 
+## Page RPC — inspecting & poking live tabs
+
+`attend page` lets you reach into a live browser tab from the CLI:
+
+| Command | Purpose |
+|---|---|
+| `attend page tabs` | List every open tab as JSON: `[{tab_id, url, title, active, window_id}]`. |
+| `attend page dump [selector]` | Dump the page's outerHTML to a temp file. Returns `{tab_id, url, title, file, bytes}`. |
+| `attend page exec [selector] (--js S \| --js-file F)` | Run a one-shot JS expression/function body in the tab and print its JSON-serialized return value. |
+
+**Tab selector flags** (apply to `dump` and `exec`; default is `--active`):
+
+| Flag | Picks |
+|---|---|
+| `--active` | The active tab in the focused window (default). |
+| `--tab-id N` | A specific tab id from `attend page tabs`. |
+| `--url-pattern P` | The first tab whose URL matches a Chrome match pattern, e.g. `https://github.com/*`. |
+
+### Workflow: finding the right selector for an injection
+
+The intended loop when you need to write an injection but don't know the
+DOM:
+
+```bash
+# 1. Find the tab that has the page you want to modify.
+attend page tabs | jq '.[] | select(.url|test("youtube.com"))'
+
+# 2. Dump its HTML to a temp file.
+attend page dump --url-pattern 'https://*.youtube.com/*'
+# → {"tab_id": 42, "url": "...", "file": "/tmp/attend-page-42-1747...html", "bytes": 5283194}
+
+# 3. Search the dump for the section you want to target. HTML is megabytes;
+# stay in the file, don't slurp the whole thing into context.
+grep -o 'ytd-[a-z-]*shorts[a-z-]*' /tmp/attend-page-42-1747...html | sort -u
+
+# 4. Pick a selector, register the injection.
+attend inject add \
+  --match 'https://*.youtube.com/*' \
+  --css 'ytd-rich-shelf-renderer[is-shorts] { display: none !important; }'
+
+# 5. Iterate: refresh the page, run `attend page exec` to verify the
+# selector hides exactly what you expected.
+attend page exec --url-pattern 'https://*.youtube.com/*' \
+  --js 'document.querySelectorAll("ytd-rich-shelf-renderer[is-shorts]").length'
+```
+
+### Exec specifics
+
+- The string passed to `--js` is wrapped so a bare expression returns its
+  value: `document.title` works, no need to write `return document.title`.
+  Function bodies / multi-statement code also work — the wrapper falls back
+  to executing as statements when the expression form fails to parse.
+- Return values are JSON-serialized via `chrome.scripting.executeScript`.
+  DOM nodes and functions are NOT serializable — project them first
+  (`document.querySelectorAll(...).length`, `el.outerHTML`, `el.getAttribute(...)`).
+- `--world` defaults to `MAIN` (page realm; sees `window.React` etc.). Use
+  `ISOLATED` if you want a fresh JS context that can't see page globals.
+
+### Don'ts
+
+- **Don't `attend page exec` arbitrary string interpolation from untrusted
+  input.** The code is `eval`'d in the page world; you're already trusting
+  the daemon's host, but agents should not pipe user-supplied strings into
+  `--js` without escaping.
+- **Don't put HTML dumps into your context window.** Page HTML can be many
+  MB. Use the file path and grep/sed/jq.
+- **Don't expect dump/exec on `chrome://` or `about:` pages.** Chrome
+  refuses extension scripting on privileged URLs; the command will error.
+- **Don't assume the extension is reachable.** Both commands hang on the
+  daemon → extension hop and time out (default 30s). Failure modes: 504
+  from the daemon means the extension didn't pick the job up at all (SW
+  asleep, no Chrome window, daemon → extension link broken).
+
+### Blast radius note
+
+Any process on this Mac that can reach `127.0.0.1:7723` can dump or exec
+in any of your open tabs — including authenticated session state (your
+Gmail inbox, your bank, etc.). This matches attend's existing trust model
+(single-user macOS, localhost daemon, no auth) but is meaningfully bigger
+than just "block a domain." If the threat model changes, the listener
+needs auth or a Unix socket with mode 0600.
+
 ## Reference: full command surface
 
 ```
@@ -284,6 +377,9 @@ attend inject add --match P [--match P...] [--exclude P...] (--js S | --js-file 
 attend inject ls
 attend inject get <id>
 attend inject rm <id>
+attend page tabs [--timeout D]
+attend page dump [--active | --tab-id N | --url-pattern P] [--out FILE] [--timeout D]
+attend page exec [--active | --tab-id N | --url-pattern P] (--js S | --js-file F) [--world MAIN|ISOLATED] [--timeout D]
 ```
 
 All commands accept `--url <baseURL>` if attendd is on a non-default port

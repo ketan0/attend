@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ketan0/attend/internal/jobs"
 	"github.com/ketan0/attend/internal/rules"
 	"github.com/ketan0/attend/internal/store"
 )
@@ -38,6 +39,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 			injCounter++
 			return "inj_test" + string(rune('0'+injCounter))
 		},
+		PageJobs: jobs.New(4),
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
@@ -618,5 +620,102 @@ func TestStatusIncludesInjections(t *testing.T) {
 	}
 	if len(s.Injections) != 1 {
 		t.Errorf("status injections = %d, want 1", len(s.Injections))
+	}
+}
+
+func TestPageJobRoundTrip(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	type subResult struct {
+		raw    []byte
+		status int
+	}
+	subCh := make(chan subResult, 1)
+	go func() {
+		resp, raw := doJSON(t, "POST", hs.URL+"/v1/page/jobs", SubmitPageJobRequest{
+			Kind:    "tabs.list",
+			Payload: json.RawMessage(`{}`),
+			Timeout: "2s",
+		})
+		subCh <- subResult{raw: raw, status: resp.StatusCode}
+	}()
+
+	resp, raw := doJSON(t, "GET", hs.URL+"/v1/page/jobs/next?wait=2s", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("next: %d %s", resp.StatusCode, raw)
+	}
+	var job struct {
+		ID      string          `json:"id"`
+		Kind    string          `json:"kind"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Kind != "tabs.list" {
+		t.Errorf("kind = %q", job.Kind)
+	}
+	if !strings.HasPrefix(job.ID, "job_") {
+		t.Errorf("ID = %q, want job_*", job.ID)
+	}
+
+	resp, raw = doJSON(t, "POST", hs.URL+"/v1/page/jobs/"+job.ID+"/result", map[string]any{
+		"ok":    true,
+		"value": map[string]any{"tabs": []any{}},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post result: %d %s", resp.StatusCode, raw)
+	}
+
+	got := <-subCh
+	if got.status != http.StatusOK {
+		t.Fatalf("submit status = %d body=%s", got.status, got.raw)
+	}
+	var out struct {
+		Ok    bool            `json:"ok"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(got.raw, &out); err != nil {
+		t.Fatalf("decode submit: %v", err)
+	}
+	if !out.Ok {
+		t.Errorf("Ok = false, raw=%s", got.raw)
+	}
+}
+
+func TestPageJobSubmitTimesOutWithoutConsumer(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, raw := doJSON(t, "POST", hs.URL+"/v1/page/jobs", SubmitPageJobRequest{
+		Kind:    "tabs.list",
+		Timeout: "50ms",
+	})
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("expected 504, got %d (%s)", resp.StatusCode, raw)
+	}
+}
+
+func TestPageJobNextEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, _ := doJSON(t, "GET", hs.URL+"/v1/page/jobs/next?wait=50ms", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestPageJobResultUnknownID(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, _ := doJSON(t, "POST", hs.URL+"/v1/page/jobs/job_unknown/result", map[string]any{
+		"ok": true,
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestPageJobRequiresKind(t *testing.T) {
+	_, hs := newTestServer(t)
+	resp, _ := doJSON(t, "POST", hs.URL+"/v1/page/jobs", SubmitPageJobRequest{Kind: ""})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
 	}
 }
