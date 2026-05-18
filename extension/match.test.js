@@ -39,6 +39,14 @@ test("path target — narrow path matches", () => {
   assert.equal(targetMatches(t, url("https://www.reddit.com/r/all")), true);
 });
 
+test("path target — wildcard path matches", () => {
+  const t = { kind: "path", value: "https://www.youtube.com/shorts/*" };
+  assert.equal(targetMatches(t, url("https://www.youtube.com/shorts/abc123")), true);
+  assert.equal(targetMatches(t, url("https://www.youtube.com/shorts/abc123?feature=share")), true);
+  assert.equal(targetMatches(t, url("https://www.youtube.com/watch?v=abc123")), false);
+  assert.equal(targetMatches(t, url("https://music.youtube.com/shorts/abc123")), false);
+});
+
 test("path target — URL-form target matches", () => {
   const t = { kind: "path", value: "https://x.com/home" };
   assert.equal(targetMatches(t, url("https://x.com/home")), true);

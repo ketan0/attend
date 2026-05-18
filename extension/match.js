@@ -28,9 +28,21 @@
       const tHost = slash >= 0 ? value.slice(0, slash) : value;
       const tPath = slash >= 0 ? value.slice(slash) : "/";
       if (host !== tHost && !host.endsWith("." + tHost)) return false;
+      if (tPath.includes("*")) {
+        return globPrefixMatches(tPath, path + search);
+      }
       return (path + search).startsWith(tPath);
     }
     return false;
+  }
+
+  function globPrefixMatches(pattern, value) {
+    const re = new RegExp("^" + escapeRegExp(pattern).replace(/\\\*/g, ".*"));
+    return re.test(value);
+  }
+
+  function escapeRegExp(s) {
+    return String(s).replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
   }
 
   function normalizeWebTargetValue(value) {
