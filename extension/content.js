@@ -23,9 +23,20 @@ const { targetMatches, parseDurationMs } = self.attendMatch;
     const url = new URL(window.location.href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return;
 
-    const data = await chrome.storage.local.get([
-      "rules", "activeNow", "paused", "cooldowns",
-    ]);
+    // chrome.runtime?.id is undefined after the extension is reloaded /
+    // updated — at which point any chrome.* call throws "Extension context
+    // invalidated". The page is about to navigate or has stale state we
+    // can't refresh anyway; silently exit.
+    if (!chrome.runtime?.id) return;
+
+    let data;
+    try {
+      data = await chrome.storage.local.get([
+        "rules", "activeNow", "paused", "cooldowns",
+      ]);
+    } catch (_) {
+      return; // same dead-runtime case as the guard above
+    }
     if (data.paused) return;
 
     const active = new Set(data.activeNow || []);

@@ -267,25 +267,35 @@ async function jobPageExec(payload) {
   const tab = await resolveTab(payload.tab);
   const code = String(payload.code || "");
   if (!code) return { ok: false, error: "page.exec requires non-empty code" };
-  const world = payload.world === "ISOLATED" ? "ISOLATED" : "MAIN";
+  // chrome.userScripts uses "USER_SCRIPT" rather than "ISOLATED" for its
+  // non-MAIN realm; we translate so the CLI flag matches the rest of attend.
+  const world = payload.world === "ISOLATED" ? "USER_SCRIPT" : "MAIN";
 
-  // We wrap the user-provided code in a function body so a bare expression
-  // like 'document.title' becomes the return value. Falls back to eval for
-  // statements that aren't valid expressions.
-  const wrapper = function (src) {
-    try {
-      return (0, eval)("(function(){return (" + src + ")})()");
-    } catch (_) {
-      return (0, eval)("(function(){" + src + "})()");
-    }
-  };
+  if (!chrome.userScripts || !chrome.userScripts.execute) {
+    return {
+      ok: false,
+      error: "chrome.userScripts.execute is unavailable. Requires Chrome 135+ " +
+        "with Developer Mode AND 'Allow User Scripts' both enabled.",
+    };
+  }
 
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    world: world,
-    func: wrapper,
-    args: [code],
-  });
+  // Wrap the user's expression so it gets a return value back. Multi-
+  // statement code should self-IIFE: '(() => { ...; return x })()'. We
+  // ship the code as a userScript source string (not via eval inside a
+  // shipped function), which is what lets it work on strict-CSP pages —
+  // userScripts run with their own CSP, not the host page's.
+  const wrapped = "(function(){return (" + code + ");})()";
+
+  let results;
+  try {
+    results = await chrome.userScripts.execute({
+      target: { tabId: tab.id },
+      world: world,
+      js: [{ code: wrapped }],
+    });
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
   const first = results[0] || {};
   if (first.error) {
     return { ok: false, error: String(first.error.message || first.error) };
